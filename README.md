@@ -66,3 +66,4 @@
 - **Пинг**: без VPN — TCP до сервера (UDP-протоколы помечаются «UDP»), с VPN — реальный HTTP-тест через ядро. Свайп вправо по узлу — пинг одного.
 - Не поддерживаются ядром sing-box: Sudoku, TrustTunnel, Mieru, Brook, Freedom (Lua), VLESS XHTTP.
 - **GOST Relay** (`type: "gost"`): собственный outbound, добавляется в sing-box патчем `core/` при сборке ядра. Только TCP, поддерживает логин/пароль и TLS/WebSocket-транспорт.
+- **Два ядра:** в `Libbox.xcframework` вместе с sing-box собран Xray (`core/xraybridge`). Узлы типа `xray` (например, VLESS XHTTP по ссылке `type=xhttp`) исполняет Xray на локальных SOCKS-портах 127.0.0.1:10800+, а sing-box ведёт туннель и маршрутизацию и отправляет их трафик в Xray.
