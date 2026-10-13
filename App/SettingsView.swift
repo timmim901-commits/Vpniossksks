@@ -176,6 +176,7 @@ struct LogCenterView: View {
     }
 
     @EnvironmentObject var store: Store
+    @EnvironmentObject var vpn: VPNManager
     @State private var source: Source = .tunnel
     @State private var text = ""
     @State private var copied = false
@@ -221,5 +222,17 @@ struct LogCenterView: View {
         .onChange(of: source) { _ in refresh() }
     }
 
-    private func refresh() { text = source.file.read() }
+    private func refresh() {
+        text = source.file.read()
+        // Без App Group файлы расширения приложению не видны — спрашиваем у запущенного туннеля.
+        guard !FilePath.hasGroupContainer, source != .app else { return }
+        let current = source
+        Task {
+            if let logs = await vpn.extensionLogs(), source == current {
+                text = current == .tunnel ? logs.tunnel : logs.core
+            } else if text.isEmpty, source == current {
+                text = "Без App Group логи расширения доступны только пока туннель запущен. Если он падает при старте — причина в логе «Приложение» (строка «причина отключения»)."
+            }
+        }
+    }
 }

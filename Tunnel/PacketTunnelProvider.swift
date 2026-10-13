@@ -12,6 +12,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private(set) var commandServer: LibboxCommandServer?
+    /// Конфиг, присланный приложением сообщением (если общий контейнер недоступен).
+    private var payloadOverride: (config: String, xray: String?)?
     private lazy var platformInterface = ExtensionPlatformInterface(self)
 
     override func startTunnel(options _: [String: NSObject]?) async throws {
@@ -27,8 +29,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func start() async throws {
-        guard FilePath.hasGroupContainer else {
-            throw ExtensionStartupError("App Group «\(AppConfig.appGroupID)» недоступна: приложение подписано без этой группы или с другим bundle ID")
+        if !FilePath.hasGroupContainer {
+            Breadcrumb.log("App Group недоступна — работаю без неё: конфиг приходит через профиль VPN и сообщения")
         }
         let basePath = FilePath.sharedDirectory.relativePath
         let workingPath = FilePath.workingDirectory.relativePath
@@ -75,12 +77,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Конфиг лежит в общем контейнере, его пишет основное приложение.
     private func startService() async throws {
         let content: String
-        do {
-            content = try String(contentsOf: FilePath.configFile, encoding: .utf8)
-        } catch {
-            throw ExtensionStartupError("не удалось прочитать config.json: \(error.localizedDescription)")
+        let xrayText: String?
+        if let o = payloadOverride {
+            content = o.config
+            xrayText = o.xray
+        } else if FilePath.hasGroupContainer, let text = try? String(contentsOf: FilePath.configFile, encoding: .utf8) {
+            content = text
+            xrayText = try? String(contentsOf: FilePath.xrayFile, encoding: .utf8)
+        } else if let pc = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
+                  let text = pc["config"] as? String, !text.isEmpty {
+            content = text
+            xrayText = pc["xray"] as? String
+            Breadcrumb.log("конфиг взят из профиля VPN")
+        } else {
+            throw ExtensionStartupError("нет конфига: общий контейнер недоступен, а профиль VPN не содержит конфиг. Нажмите «подключить» в приложении ещё раз")
         }
-        try startXrayIfNeeded()
+        try startXrayIfNeeded(xrayText)
         Breadcrumb.log("config.json: \(content.utf8.count) байт, запускаю ядро")
         let options = LibboxOverrideOptions()
         do {
@@ -91,9 +103,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// Узлы Xray: ядро Xray слушает локальные SOCKS-порты, sing-box отправляет в них трафик.
-    private func startXrayIfNeeded() throws {
+    private func startXrayIfNeeded(_ xrayText: String?) throws {
         var err: NSError?
-        guard let text = try? String(contentsOf: FilePath.xrayFile, encoding: .utf8),
+        guard let text = xrayText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             _ = XraybridgeStop(&err)
             return
@@ -135,9 +147,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Сообщение от приложения: "reload" — перечитать config.json.
+    /// Сообщения от приложения: "reload" — перечитать конфиг; JSON {"cmd":"reload","config":…,"xray":…} —
+    /// применить присланный конфиг; "logs" — вернуть логи расширения (когда общий контейнер недоступен).
     override func handleAppMessage(_ messageData: Data) async -> Data? {
-        guard String(data: messageData, encoding: .utf8) == "reload" else { return nil }
+        if String(data: messageData, encoding: .utf8) == "logs" {
+            let payload: [String: String] = ["tunnel": Log.tunnel.read(), "core": Log.core.read()]
+            return try? JSONSerialization.data(withJSONObject: payload)
+        }
+        var isReload = String(data: messageData, encoding: .utf8) == "reload"
+        if !isReload, let obj = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
+           obj["cmd"] as? String == "reload", let config = obj["config"] as? String {
+            payloadOverride = (config, obj["xray"] as? String)
+            isReload = true
+        }
+        guard isReload else { return nil }
         do {
             try await reloadService()
             Breadcrumb.log("reload OK")
@@ -159,8 +182,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 }
 
-final class ExtensionStartupError: NSObject, LocalizedError {
-    let message: String
-    init(_ message: String) { self.message = message }
-    var errorDescription: String? { message }
+/// NSError, чтобы текст причины доходил до приложения (fetchLastDisconnectError).
+final class ExtensionStartupError: NSError, @unchecked Sendable {
+    init(_ message: String) {
+        super.init(domain: "Orbit", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
 }

@@ -120,11 +120,17 @@ final class VPNManager: ObservableObject {
         }
     }
 
-    private func ensureManager(onDemand: Bool) async throws -> NETunnelProviderManager {
+    private func ensureManager(onDemand: Bool, payload: (config: String, xray: String?)? = nil) async throws -> NETunnelProviderManager {
         let m = manager ?? NETunnelProviderManager()
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = AppConfig.extensionBundleID
         proto.serverAddress = "Orbit"
+        // Без App Group конфиг едет в самом профиле VPN.
+        if !FilePath.hasGroupContainer, let payload {
+            var pc: [String: Any] = ["config": payload.config]
+            if let x = payload.xray { pc["xray"] = x }
+            proto.providerConfiguration = pc
+        }
         m.protocolConfiguration = proto
         m.localizedDescription = "Orbit"
         m.isEnabled = true
@@ -138,10 +144,12 @@ final class VPNManager: ObservableObject {
         return m
     }
 
-    func writeConfig(_ store: Store) throws {
+    @discardableResult
+    func writeConfig(_ store: Store) throws -> (config: String, xray: String?) {
         let text = try ConfigBuilder(data: store.data).build()
+        let xray = ConfigBuilder(data: store.data).buildXray()
         try text.write(to: FilePath.configFile, atomically: true, encoding: .utf8)
-        if let xray = ConfigBuilder(data: store.data).buildXray() {
+        if let xray {
             try xray.write(to: FilePath.xrayFile, atomically: true, encoding: .utf8)
             Log.app.log("xray.json записан: \(xray.utf8.count) байт")
         } else {
@@ -149,13 +157,29 @@ final class VPNManager: ObservableObject {
         }
         let d = store.data
         Log.app.log("конфиг записан: \(text.utf8.count) байт, режим=\(d.settings.mode.rawValue), узлов=\(d.nodes.count), правил=\(d.rules.count), tailscale=\(d.tailscale.enabled)")
+        return (text, xray)
+    }
+
+    /// Логи расширения через сообщение (нужно, когда общий контейнер недоступен и файлов не видно).
+    func extensionLogs() async -> (tunnel: String, core: String)? {
+        guard isActive, let session = manager?.connection as? NETunnelProviderSession else { return nil }
+        return await withCheckedContinuation { cont in
+            do {
+                try session.sendProviderMessage(Data("logs".utf8)) { reply in
+                    guard let reply, let obj = try? JSONSerialization.jsonObject(with: reply) as? [String: String] else {
+                        cont.resume(returning: nil); return
+                    }
+                    cont.resume(returning: (obj["tunnel"] ?? "", obj["core"] ?? ""))
+                }
+            } catch { cont.resume(returning: nil) }
+        }
     }
 
     func connect(_ store: Store) async {
         Log.app.log("connect: нажата кнопка (группа=\(FilePath.hasGroupContainer), bundle=\(Bundle.main.bundleIdentifier ?? "?"))")
         do {
-            try writeConfig(store)
-            let m = try await ensureManager(onDemand: store.data.settings.onDemand)
+            let payload = try writeConfig(store)
+            let m = try await ensureManager(onDemand: store.data.settings.onDemand, payload: payload)
             try m.connection.startVPNTunnel()
             lastError = nil
             Log.app.log("connect: startVPNTunnel вызван")
@@ -179,9 +203,15 @@ final class VPNManager: ObservableObject {
     /// Применить изменения настроек: перезаписать конфиг и, если туннель работает, перечитать его.
     func apply(_ store: Store) async {
         do {
-            try writeConfig(store)
+            let payload = try writeConfig(store)
             if isActive, let session = manager?.connection as? NETunnelProviderSession {
-                try session.sendProviderMessage(Data("reload".utf8)) { reply in
+                var message = Data("reload".utf8)
+                if !FilePath.hasGroupContainer {
+                    var obj: [String: Any] = ["cmd": "reload", "config": payload.config]
+                    if let x = payload.xray { obj["xray"] = x }
+                    message = (try? JSONSerialization.data(withJSONObject: obj)) ?? message
+                }
+                try session.sendProviderMessage(message) { reply in
                     let text = reply.flatMap { String(data: $0, encoding: .utf8) } ?? ""
                     Log.app.log("reload: ответ туннеля \(text.isEmpty ? "OK" : "ОШИБКА: " + text)")
                     if !text.isEmpty {
