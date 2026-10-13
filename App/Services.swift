@@ -89,7 +89,15 @@ final class VPNManager: ObservableObject {
         guard let connection = manager?.connection else { return }
         observer = NotificationCenter.default.addObserver(forName: .NEVPNStatusDidChange, object: connection, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                self?.status = self?.manager?.connection.status ?? .invalid
+                guard let self else { return }
+                self.status = self.manager?.connection.status ?? .invalid
+                if self.status == .disconnected {
+                    self.manager?.connection.fetchLastDisconnectError { err in
+                        Task { @MainActor in
+                            if let err { self.lastError = err.localizedDescription }
+                        }
+                    }
+                }
             }
         }
     }

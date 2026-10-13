@@ -42,6 +42,7 @@ struct SettingsView: View {
 
                 Section("Диагностика") {
                     NavigationLink("Журнал ядра") { LogsView() }
+                    NavigationLink("Лог запуска туннеля") { TunnelLogView() }
                     Button("Показать конфиг sing-box") { showConfig = true }
                 }
 
@@ -128,5 +129,30 @@ struct LogsView: View {
                 }
             } catch {}
         }
+    }
+}
+
+struct TunnelLogView: View {
+    @State private var text = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("App Group: \(AppConfig.appGroupID) — \(FilePath.hasGroupContainer ? "доступна" : "НЕДОСТУПНА")")
+                    .font(.footnote.bold())
+                    .foregroundStyle(FilePath.hasGroupContainer ? .green : .red)
+                Text("Bundle ID: \(Bundle.main.bundleIdentifier ?? "?")").font(.footnote)
+                Divider()
+                Text(text.isEmpty ? "Лог пуст: туннель ещё не запускался." : text)
+                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding()
+        }
+        .navigationTitle("Лог туннеля")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { Button { text = Breadcrumb.read() } label: { Image(systemName: "arrow.clockwise") } }
+            ToolbarItem(placement: .topBarTrailing) { ShareLink(item: text) }
+        }
+        .onAppear { text = Breadcrumb.read() }
     }
 }

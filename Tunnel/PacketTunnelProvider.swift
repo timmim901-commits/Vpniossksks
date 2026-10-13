@@ -15,6 +15,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platformInterface = ExtensionPlatformInterface(self)
 
     override func startTunnel(options _: [String: NSObject]?) async throws {
+        Breadcrumb.reset()
+        Breadcrumb.log("startTunnel, bundle=\(Bundle.main.bundleIdentifier ?? "?"), group=\(AppConfig.appGroupID), groupOK=\(FilePath.hasGroupContainer)")
+        do {
+            try await start()
+            Breadcrumb.log("OK: туннель запущен")
+        } catch {
+            Breadcrumb.log("ОШИБКА: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private func start() async throws {
+        guard FilePath.hasGroupContainer else {
+            throw ExtensionStartupError("App Group «\(AppConfig.appGroupID)» недоступна: приложение подписано без этой группы или с другим bundle ID")
+        }
         let basePath = FilePath.sharedDirectory.relativePath
         let workingPath = FilePath.workingDirectory.relativePath
         let tempPath = FilePath.cacheDirectory.relativePath
@@ -37,6 +52,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw ExtensionStartupError("setup: \(setupError.localizedDescription)")
         }
 
+        Breadcrumb.log("setup OK")
         var error: NSError?
         commandServer = LibboxNewCommandServer(platformInterface, platformInterface, &error)
         if let error {
@@ -47,6 +63,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             throw ExtensionStartupError("start command server: \(error.localizedDescription)")
         }
+        Breadcrumb.log("command server OK")
         try await startService()
         writeMessage("Orbit: туннель запущен")
     }
@@ -63,6 +80,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             throw ExtensionStartupError("не удалось прочитать config.json: \(error.localizedDescription)")
         }
+        Breadcrumb.log("config.json: \(content.utf8.count) байт, запускаю ядро")
         let options = LibboxOverrideOptions()
         do {
             try commandServer!.startOrReloadService(content, options: options)
