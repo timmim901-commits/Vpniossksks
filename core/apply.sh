@@ -17,3 +17,19 @@ if "protocol/gost" not in s:
     open(p, "w").write(s)
 assert "gost.RegisterOutbound(registry)" in s
 PY
+
+# --- Xray рядом с sing-box: один фреймворк, один Go-рантайм ---
+XRAY_VERSION="${XRAY_VERSION:-v26.7.28}"
+mkdir -p experimental/xraybridge
+cp "$SRC/xraybridge/xray.go" experimental/xraybridge/xray.go
+go get "github.com/xtls/xray-core@${XRAY_VERSION}"
+go get ./experimental/xraybridge
+python3 - <<'PY'
+p = "cmd/internal/build_libbox/main.go"
+s = open(p).read()
+needle = 'args = append(args, "./experimental/libbox")'
+i = s.rindex(needle)  # последнее вхождение — сборка для Apple
+s = s[:i] + 'args = append(args, "./experimental/libbox", "./experimental/xraybridge")' + s[i + len(needle):]
+open(p, "w").write(s)
+PY
+grep -q xraybridge cmd/internal/build_libbox/main.go

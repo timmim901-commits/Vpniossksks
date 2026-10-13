@@ -21,7 +21,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Libbox.tar
-          key: libbox-ios-${{ env.SING_BOX_REF }}-v2-gost
+          key: libbox-ios-${{ env.SING_BOX_REF }}-v3-xray
 
       - uses: actions/setup-go@v5
         if: steps.cache.outputs.cache-hit != 'true'
