@@ -40,6 +40,9 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 }
 
+                Section("Расширенное") {
+                    NavigationLink("Свой JSON-конфиг") { CustomConfigView() }
+                }
                 Section("Диагностика") {
                     NavigationLink("Журнал ядра") { LogsView() }
                     NavigationLink("Логи и отчёт") { LogCenterView() }

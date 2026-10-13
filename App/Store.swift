@@ -32,7 +32,17 @@ final class Store: ObservableObject {
 
     func remove(nodeIDs: Set<UUID>) {
         data.nodes.removeAll { nodeIDs.contains($0.id) }
+        data.chainList = data.chainList.compactMap { c in
+            var c = c
+            c.members.removeAll { nodeIDs.contains($0) }
+            return c.members.isEmpty ? nil : c
+        }
         if let selected = data.settings.selectedNodeID, nodeIDs.contains(selected) {
+            data.settings.selectedNodeID = nil
+        }
+        // выбранная цепочка могла исчезнуть
+        if let selected = data.settings.selectedNodeID,
+           !data.nodes.contains(where: { $0.id == selected }), !data.chainList.contains(where: { $0.id == selected }) {
             data.settings.selectedNodeID = nil
         }
     }
@@ -47,7 +57,7 @@ final class Store: ObservableObject {
         var errors: [String] = []
 
         // JSON и WireGuard-конфиги многострочные — не разбираем построчно
-        let whole = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let whole = LinkParser.normalizeQuotes(text.trimmingCharacters(in: .whitespacesAndNewlines))
         if whole.hasPrefix("{") || whole.hasPrefix("[") || whole.contains("[Interface]") {
             nodeLines = [whole]
         } else {

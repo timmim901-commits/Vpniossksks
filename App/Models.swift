@@ -73,6 +73,13 @@ struct Node: Codable, Identifiable, Hashable {
     var subscriptionID: UUID?
 }
 
+/// Цепочка (Relay): трафик идёт через звенья по порядку, первое — ближайшее к устройству.
+struct Chain: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var members: [UUID]
+}
+
 struct Subscription: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
@@ -108,6 +115,9 @@ struct AppSettings: Codable {
     var siteURL = "https://yandex.qwexiup.fun"
     var logLevel = "info"
     var clashSecret = UUID().uuidString
+    // Поля ниже необязательные, чтобы старый store.json продолжал читаться.
+    var useCustomConfig: Bool?
+    var customConfig: String?
 }
 
 struct Persisted: Codable {
@@ -116,4 +126,10 @@ struct Persisted: Codable {
     var rules: [Rule] = []
     var settings = AppSettings()
     var tailscale = TailscaleSettings()
+    var chains: [Chain]?
+
+    var chainList: [Chain] {
+        get { chains ?? [] }
+        set { chains = newValue }
+    }
 }

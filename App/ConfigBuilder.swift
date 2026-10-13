@@ -13,23 +13,51 @@ struct ConfigBuilder {
         var errorDescription: String? { message }
     }
 
-    /// Уникальные теги узлов в конфиге (нужны и приложению для запросов к Clash API).
+    /// Уникальные теги выбираемых узлов и цепочек (нужны и приложению для запросов к Clash API).
+    /// Вспомогательные звенья (ShadowTLS) тега не получают — они используются только внутри цепочек.
     func tagMap() -> [UUID: String] {
         var used = ConfigBuilder.reservedTags
         var tags: [UUID: String] = [:]
-        for node in data.nodes {
-            let base = node.name.isEmpty ? node.type : node.name
-            var tag = base
+        func unique(_ base: String) -> String {
+            var tag = base.isEmpty ? "node" : base
             var n = 2
             while used.contains(tag) { tag = "\(base) (\(n))"; n += 1 }
             used.insert(tag)
-            tags[node.id] = tag
+            return tag
+        }
+        for node in data.nodes where !node.isHelper {
+            tags[node.id] = unique(node.name.isEmpty ? node.type : node.name)
+        }
+        for chain in data.chainList {
+            tags[chain.id] = unique("⛓ " + chain.name)
         }
         return tags
     }
 
+    private func parse(_ node: Node) -> JSON? {
+        guard let raw = node.json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: raw)) as? JSON
+    }
+
+    /// Раскрывает встроенный "_shadowtls": добавляет вспомогательный outbound и ставит detour.
+    private func expand(_ obj: JSON, tag: String, into outbounds: inout [JSON]) -> JSON {
+        var obj = obj
+        if var st = obj["_shadowtls"] as? JSON {
+            obj.removeValue(forKey: "_shadowtls")
+            let helperTag = tag + " ›tls"
+            st["tag"] = helperTag
+            outbounds.append(st)
+            obj["detour"] = helperTag
+        }
+        return obj
+    }
+
     func build() throws -> String {
         let s = data.settings
+        if s.useCustomConfig == true, let custom = s.customConfig,
+           !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LinkParser.normalizeQuotes(custom)
+        }
         let ts = data.tailscale
         let tsOn = ts.enabled
 
@@ -37,14 +65,30 @@ struct ConfigBuilder {
         var outbounds: [JSON] = []
         var endpoints: [JSON] = []
         let tags = tagMap()
-        for node in data.nodes {
-            guard let tag = tags[node.id],
-                  let raw = node.json.data(using: .utf8),
-                  var obj = (try? JSONSerialization.jsonObject(with: raw)) as? JSON else { continue }
+        for node in data.nodes where !node.isHelper {
+            guard let tag = tags[node.id], var obj = parse(node) else { continue }
             obj["tag"] = tag
+            obj = expand(obj, tag: tag, into: &outbounds)
             if node.isEndpoint { endpoints.append(obj) } else { outbounds.append(obj) }
         }
-        let nodeTags = data.nodes.compactMap { tags[$0.id] }
+        // --- цепочки (Relay): каждое звено — копия узла с detour на предыдущее ---
+        for chain in data.chainList {
+            guard let chainTag = tags[chain.id] else { continue }
+            let members = chain.members.compactMap { id in data.nodes.first { $0.id == id } }
+            var previous: String?
+            for (i, member) in members.enumerated() {
+                guard var obj = parse(member) else { continue }
+                let isLast = i == members.count - 1
+                let tag = isLast ? chainTag : "\(chainTag) ›\(i + 1)"
+                obj["tag"] = tag
+                obj = expand(obj, tag: tag, into: &outbounds)
+                if let previous { obj["detour"] = previous }
+                if member.isEndpoint { endpoints.append(obj) } else { outbounds.append(obj) }
+                previous = tag
+            }
+        }
+        let nodeTags = data.nodes.filter { !$0.isHelper }.compactMap { tags[$0.id] }
+            + data.chainList.compactMap { tags[$0.id] }
         let hasNodes = !nodeTags.isEmpty
 
         outbounds.append(["type": "direct", "tag": "direct"])

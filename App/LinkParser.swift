@@ -21,6 +21,10 @@ enum LinkParser {
         for raw in trimmed.components(separatedBy: CharacterSet.newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
+            if line.range(of: #"=\s*snell\s*,"#, options: .regularExpression) != nil {
+                if let node = parseSurgeSnell(line) { nodes.append(node) }
+                continue
+            }
             if let node = parseLink(line) { nodes.append(node) }
         }
         return nodes
@@ -29,9 +33,15 @@ enum LinkParser {
     // MARK: JSON
 
     private static let skipTypes: Set<String> = ["selector", "urltest", "direct", "block", "dns", "any"]
-    private static let endpointTypes: Set<String> = ["wireguard"]
+    static let endpointTypes: Set<String> = ["wireguard", "masque-client", "openconnect", "openvpn-client"]
 
-    private static func parseJSON(_ text: String) -> [Node] {
+    static func normalizeQuotes(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{201C}", with: "\"").replacingOccurrences(of: "\u{201D}", with: "\"")
+            .replacingOccurrences(of: "\u{2018}", with: "'").replacingOccurrences(of: "\u{2019}", with: "'")
+    }
+
+    private static func parseJSON(_ raw: String) -> [Node] {
+        let text = normalizeQuotes(raw)
         guard let data = text.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) else { return [] }
         var items: [JSON] = []
@@ -68,6 +78,12 @@ enum LinkParser {
         case "tuic": return parseTUIC(link)
         case "anytls": return parseAnyTLS(link)
         case "socks", "socks5", "socks5h": return parseSocks(link)
+        case "socks+tls", "socks5+tls", "socks5s": return parseSocks(link, tls: true)
+        case "http-proxy", "https-proxy", "http+tls": return parseHTTPProxy(link, tls: scheme != "http-proxy")
+        case "hysteria": return parseHysteria1(link)
+        case "naive+https", "naive+quic": return parseNaive(link, quic: scheme == "naive+quic")
+        case "ssh": return parseSSH(link)
+        case "snell": return parseSnellLink(link)
         default: return nil
         }
     }
@@ -227,6 +243,19 @@ enum LinkParser {
                 return nil
             }
         }
+        // Shadowrocket: ss://…?shadow-tls=BASE64({"version":"3","host":"sni","password":"…"})
+        if let st = query.components(separatedBy: "&").first(where: { $0.hasPrefix("shadow-tls=") }) {
+            let raw = String(st.dropFirst("shadow-tls=".count)).removingPercentEncoding ?? ""
+            let jsonText = raw.hasPrefix("{") ? raw : (base64Decode(raw) ?? "")
+            if let data = jsonText.data(using: .utf8),
+               let j = try? JSONSerialization.jsonObject(with: data) as? JSON {
+                let ver = Int("\(j["version"] ?? 3)") ?? 3
+                let sni = (j["host"] as? String) ?? host
+                o["_shadowtls"] = ["type": "shadowtls", "server": host, "server_port": port, "version": ver,
+                                   "password": (j["password"] as? String) ?? "",
+                                   "tls": ["enabled": true, "server_name": sni] as JSON] as JSON
+            }
+        }
         return makeNode(name: tag, type: "shadowsocks", json: o)
     }
 
@@ -264,9 +293,15 @@ enum LinkParser {
         return makeNode(name: p.name, type: "anytls", json: o)
     }
 
-    private static func parseSocks(_ link: String) -> Node? {
-        guard let p = components(link, defaultPort: 1080) else { return nil }
+    private static func parseSocks(_ link: String, tls useTLS: Bool = false) -> Node? {
+        // socks5+tls:// → стандартный парсер URL не знает схему с «+», подменяем на socks5://
+        let normalized = useTLS ? "socks5://" + (link.components(separatedBy: "://").dropFirst().joined(separator: "://")) : link
+        guard let p = components(normalized, defaultPort: 1080) else { return nil }
         var o: JSON = ["type": "socks", "tag": p.name, "server": p.host, "server_port": p.port, "version": "5"]
+        if useTLS {
+            o["tls"] = ["enabled": true, "server_name": p.query["sni"] ?? p.host,
+                        "insecure": p.query["insecure"] == "1"] as JSON
+        }
         if let u = p.user, !u.isEmpty {
             if let pw = p.password {
                 o["username"] = u; o["password"] = pw
@@ -278,6 +313,78 @@ enum LinkParser {
             }
         }
         return makeNode(name: p.name, type: "socks", json: o)
+    }
+
+    private static func parseHTTPProxy(_ link: String, tls useTLS: Bool) -> Node? {
+        let rest = link.components(separatedBy: "://").dropFirst().joined(separator: "://")
+        guard let p = components("http://" + rest, defaultPort: useTLS ? 443 : 8080) else { return nil }
+        var o: JSON = ["type": "http", "tag": p.name, "server": p.host, "server_port": p.port]
+        if let u = p.user, !u.isEmpty { o["username"] = u }
+        if let pw = p.password { o["password"] = pw }
+        if useTLS {
+            o["tls"] = ["enabled": true, "server_name": p.query["sni"] ?? p.host,
+                        "insecure": p.query["insecure"] == "1"] as JSON
+        }
+        return makeNode(name: p.name, type: "http", json: o)
+    }
+
+    private static func parseHysteria1(_ link: String) -> Node? {
+        guard let p = components(link) else { return nil }
+        var o: JSON = ["type": "hysteria", "tag": p.name, "server": p.host, "server_port": p.port,
+                       "up_mbps": Int(p.query["upmbps"] ?? "") ?? 100, "down_mbps": Int(p.query["downmbps"] ?? "") ?? 100]
+        if let auth = p.query["auth"], !auth.isEmpty { o["auth_str"] = auth }
+        if let obfs = p.query["obfsParam"] ?? p.query["obfs"], !obfs.isEmpty, obfs != "xplus" { o["obfs"] = obfs }
+        var t: JSON = ["enabled": true, "server_name": p.query["peer"] ?? p.query["sni"] ?? p.host]
+        if p.query["insecure"] == "1" { t["insecure"] = true }
+        if let alpn = p.query["alpn"], !alpn.isEmpty { t["alpn"] = alpn.split(separator: ",").map(String.init) }
+        o["tls"] = t
+        return makeNode(name: p.name, type: "hysteria", json: o)
+    }
+
+    private static func parseNaive(_ link: String, quic: Bool) -> Node? {
+        let rest = link.components(separatedBy: "://").dropFirst().joined(separator: "://")
+        guard let p = components("https://" + rest) else { return nil }
+        var o: JSON = ["type": "naive", "tag": p.name, "server": p.host, "server_port": p.port,
+                       "username": p.user ?? "", "password": p.password ?? ""]
+        o["tls"] = ["enabled": true, "server_name": p.query["sni"] ?? p.host] as JSON
+        if quic { o["quic"] = true }
+        return makeNode(name: p.name, type: "naive", json: o)
+    }
+
+    private static func parseSSH(_ link: String) -> Node? {
+        guard let p = components(link, defaultPort: 22) else { return nil }
+        var o: JSON = ["type": "ssh", "tag": p.name, "server": p.host, "server_port": p.port, "user": p.user ?? "root"]
+        if let pw = p.password { o["password"] = pw }
+        return makeNode(name: p.name, type: "ssh", json: o)
+    }
+
+    /// snell://PSK@host:port?version=4&obfs=http&obfs-host=example.com#name
+    private static func parseSnellLink(_ link: String) -> Node? {
+        guard let p = components(link, defaultPort: 443), let psk = p.user else { return nil }
+        var o: JSON = ["type": "snell", "tag": p.name, "server": p.host, "server_port": p.port, "psk": psk,
+                       "version": Int(p.query["version"] ?? "") ?? 4]
+        if let obfs = p.query["obfs"], !obfs.isEmpty, obfs != "none" { o["obfs_mode"] = obfs }
+        if let host = p.query["obfs-host"], !host.isEmpty { o["obfs_host"] = host }
+        return makeNode(name: p.name, type: "snell", json: o)
+    }
+
+    /// Строка в стиле Surge: Имя = snell, host, port, psk=…, version=4, obfs=http, obfs-host=…
+    private static func parseSurgeSnell(_ line: String) -> Node? {
+        guard let eq = line.firstIndex(of: "=") else { return nil }
+        let name = line[..<eq].trimmingCharacters(in: .whitespaces)
+        let parts = line[line.index(after: eq)...].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 3, parts[0].lowercased() == "snell", let port = Int(parts[2]) else { return nil }
+        var opts: [String: String] = [:]
+        for part in parts.dropFirst(3) {
+            guard let e = part.firstIndex(of: "=") else { continue }
+            opts[part[..<e].trimmingCharacters(in: .whitespaces).lowercased()] = part[part.index(after: e)...].trimmingCharacters(in: .whitespaces)
+        }
+        guard let psk = opts["psk"] else { return nil }
+        var o: JSON = ["type": "snell", "tag": name, "server": parts[1], "server_port": port, "psk": psk,
+                       "version": Int(opts["version"] ?? "") ?? 4]
+        if let obfs = opts["obfs"], !obfs.isEmpty, obfs != "none" { o["obfs_mode"] = obfs }
+        if let host = opts["obfs-host"], !host.isEmpty { o["obfs_host"] = host }
+        return makeNode(name: name, type: "snell", json: o)
     }
 
     // MARK: WireGuard .conf

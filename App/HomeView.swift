@@ -2,21 +2,35 @@ import SwiftUI
 import NetworkExtension
 import AVFoundation
 
+private enum HomeSheet: Identifiable {
+    case addText, addSub, scanner
+    case editNode(UUID?, String)
+    case editChain(UUID?)
+    var id: String {
+        switch self {
+        case .addText: return "addText"
+        case .addSub: return "addSub"
+        case .scanner: return "scanner"
+        case .editNode(let i, let t): return "node-\(i?.uuidString ?? "new")-\(t.hashValue)"
+        case .editChain(let i): return "chain-\(i?.uuidString ?? "new")"
+        }
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var vpn: VPNManager
+    @StateObject private var ping = PingModel()
 
     @State private var traffic: ClashClient.Traffic?
-    @State private var latencies: [UUID: Int] = [:]
-    @State private var testing = false
     @State private var activeTag: String?
-    @State private var showAddText = false
-    @State private var showAddSub = false
-    @State private var showScanner = false
+    @State private var sheet: HomeSheet?
     @State private var message: String?
 
     private var client: ClashClient { ClashClient(secret: store.data.settings.clashSecret) }
     private var tagMap: [UUID: String] { ConfigBuilder(data: store.data).tagMap() }
+    private var connected: Bool { vpn.status == .connected }
+    private var testing: Bool { ping.states.values.contains(.testing) }
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -29,26 +43,68 @@ struct HomeView: View {
                         store.data.settings.selectedNodeID = nil
                         select(tag: "auto")
                     } label: {
-                        row(title: "Авто (лучший по пингу)", subtitle: "urltest", latency: nil,
+                        row(title: "Авто (лучший по пингу)", subtitle: "urltest", id: nil,
                             selected: store.data.settings.selectedNodeID == nil)
                     }
-                    ForEach(store.data.nodes) { node in
+                    ForEach(store.data.nodes.filter { !$0.isHelper }) { node in
                         Button {
                             store.data.settings.selectedNodeID = node.id
                             if let tag = tagMap[node.id] { select(tag: tag) }
                         } label: {
-                            row(title: node.name, subtitle: node.type.uppercased(), latency: latencies[node.id],
+                            row(title: node.name, subtitle: node.type.uppercased(), id: node.id,
                                 selected: store.data.settings.selectedNodeID == node.id)
                         }
-                    }
-                    .onDelete { idx in
-                        let ids = Set(idx.map { store.data.nodes[$0].id })
-                        store.remove(nodeIDs: ids)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { store.remove(nodeIDs: [node.id]) } label: { Label("Удалить", systemImage: "trash") }
+                            Button { sheet = .editNode(node.id, "") } label: { Label("JSON", systemImage: "curlybraces") }.tint(.indigo)
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button { Task { await ping.test(id: node.id, store: store, connected: connected) } } label: {
+                                Label("Пинг", systemImage: "speedometer")
+                            }.tint(.green)
+                        }
                     }
                     if store.data.nodes.isEmpty {
-                        Text("Добавьте узлы кнопкой «+»: ссылку vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, подписку, QR или WireGuard-конфиг.")
+                        Text("Добавьте узлы кнопкой «+»: ссылку, подписку, QR, WireGuard-конфиг, либо создайте узел из шаблона/JSON.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                }
+
+                let helpers = store.data.nodes.filter { $0.isHelper }
+                if !helpers.isEmpty {
+                    Section("Звенья (ShadowTLS)") {
+                        ForEach(helpers) { node in
+                            Button { sheet = .editNode(node.id, "") } label: {
+                                VStack(alignment: .leading) {
+                                    Text(node.name).foregroundStyle(.primary)
+                                    Text("только для цепочек").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .swipeActions {
+                                Button(role: .destructive) { store.remove(nodeIDs: [node.id]) } label: { Label("Удалить", systemImage: "trash") }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    ForEach(store.data.chainList) { chain in
+                        Button {
+                            store.data.settings.selectedNodeID = chain.id
+                            if let tag = tagMap[chain.id] { select(tag: tag) }
+                        } label: {
+                            row(title: "⛓ " + chain.name, subtitle: chainSubtitle(chain), id: chain.id,
+                                selected: store.data.settings.selectedNodeID == chain.id)
+                        }
+                        .swipeActions {
+                            Button(role: .destructive) { removeChain(chain) } label: { Label("Удалить", systemImage: "trash") }
+                            Button { sheet = .editChain(chain.id) } label: { Label("Изменить", systemImage: "pencil") }.tint(.indigo)
+                        }
+                    }
+                    Button { sheet = .editChain(nil) } label: { Label("Создать цепочку (Relay)", systemImage: "link") }
+                        .disabled(store.data.nodes.count < 2)
+                } header: { Text("Цепочки") } footer: {
+                    Text("Relay: трафик последовательно проходит через несколько узлов, например ShadowTLS → Shadowsocks.")
                 }
 
                 if !store.data.subscriptions.isEmpty {
@@ -77,27 +133,40 @@ struct HomeView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        Task { await testAll() }
+                        Task { await ping.testAll(store: store, connected: connected) }
                     } label: {
                         if testing { ProgressView() } else { Image(systemName: "speedometer") }
                     }
-                    .disabled(vpn.status != .connected || testing)
+                    .disabled(testing)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button { pasteFromClipboard() } label: { Label("Вставить из буфера", systemImage: "doc.on.clipboard") }
-                        Button { showScanner = true } label: { Label("Сканировать QR", systemImage: "qrcode.viewfinder") }
-                        Button { showAddText = true } label: { Label("Ссылки / JSON / WireGuard", systemImage: "text.cursor") }
-                        Button { showAddSub = true } label: { Label("Подписка по URL", systemImage: "link.badge.plus") }
+                        Button { sheet = .scanner } label: { Label("Сканировать QR", systemImage: "qrcode.viewfinder") }
+                        Button { sheet = .addText } label: { Label("Ссылки / JSON / WireGuard", systemImage: "text.cursor") }
+                        Button { sheet = .addSub } label: { Label("Подписка по URL", systemImage: "link.badge.plus") }
+                        Divider()
+                        Menu {
+                            ForEach(NodeTemplates.all) { t in
+                                Button(t.title) { sheet = .editNode(nil, t.json) }
+                            }
+                        } label: { Label("Новый узел из шаблона", systemImage: "doc.badge.plus") }
+                        Button { sheet = .editNode(nil, "{\n  \"type\": \"\"\n}") } label: { Label("Новый узел (JSON)", systemImage: "curlybraces") }
+                        Button { sheet = .editChain(nil) } label: { Label("Новая цепочка", systemImage: "link") }
                     } label: { Image(systemName: "plus") }
                 }
             }
-            .sheet(isPresented: $showAddText) { AddTextSheet() }
-            .sheet(isPresented: $showAddSub) { AddSubscriptionSheet() }
-            .sheet(isPresented: $showScanner) {
-                QRScannerView { code in
-                    showScanner = false
-                    Task { message = await store.smartImport(code).message }
+            .sheet(item: $sheet) { item in
+                switch item {
+                case .addText: AddTextSheet()
+                case .addSub: AddSubscriptionSheet()
+                case .scanner:
+                    QRScannerView { code in
+                        sheet = nil
+                        Task { message = await store.smartImport(code).message }
+                    }
+                case .editNode(let id, let json): NodeEditorView(nodeID: id, initialJSON: json)
+                case .editChain(let id): ChainEditorView(chainID: id)
                 }
             }
             .alert("Orbit", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -159,17 +228,34 @@ struct HomeView: View {
         }
     }
 
-    private func row(title: String, subtitle: String, latency: Int?, selected: Bool) -> some View {
+    private func chainSubtitle(_ chain: Chain) -> String {
+        chain.members.compactMap { id in store.data.nodes.first { $0.id == id }?.type.uppercased() }.joined(separator: " → ")
+    }
+
+    @ViewBuilder
+    private func pingLabel(_ id: UUID) -> some View {
+        switch ping.states[id] {
+        case .testing:
+            ProgressView().controlSize(.small)
+        case .ms(let v):
+            Text("\(v) мс").font(.caption.monospacedDigit()).foregroundStyle(v < 300 ? .green : .orange)
+        case .failed(let why):
+            Text(why).font(.caption).foregroundStyle(.red)
+        case .udp:
+            Text("UDP").font(.caption).foregroundStyle(.secondary)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func row(title: String, subtitle: String, id: UUID?, selected: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).foregroundStyle(.primary)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if let l = latency {
-                Text(l > 0 ? "\(l) мс" : "—").font(.caption.monospacedDigit())
-                    .foregroundStyle(l > 0 ? (l < 300 ? .green : .orange) : .red)
-            }
+            if let id { pingLabel(id) }
             if selected { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
         }
     }
@@ -179,6 +265,11 @@ struct HomeView: View {
     private func select(tag: String) {
         guard vpn.status == .connected else { return }
         Task { try? await client.select(tag: tag) }
+    }
+
+    private func removeChain(_ chain: Chain) {
+        store.data.chainList.removeAll { $0.id == chain.id }
+        if store.data.settings.selectedNodeID == chain.id { store.data.settings.selectedNodeID = nil }
     }
 
     private func pasteFromClipboard() {
@@ -194,21 +285,6 @@ struct HomeView: View {
             message = "Обновлено, узлов: \(n)"
         } catch {
             message = error.localizedDescription
-        }
-    }
-
-    private func testAll() async {
-        testing = true
-        defer { testing = false }
-        let tags = tagMap
-        let url = store.data.settings.urlTestURL
-        let c = client
-        await withTaskGroup(of: (UUID, Int).self) { group in
-            for node in store.data.nodes {
-                guard let tag = tags[node.id] else { continue }
-                group.addTask { (node.id, (try? await c.delay(tag: tag, url: url)) ?? -1) }
-            }
-            for await (id, ms) in group { latencies[id] = ms }
         }
     }
 }
