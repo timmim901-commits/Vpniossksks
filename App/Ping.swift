@@ -129,6 +129,7 @@ final class PingModel: ObservableObject {
         if t.contains("no such host") || t.contains("lookup") || t.contains("dns") { return "DNS не резолвит" }
         if t.contains("timeout") || t.contains("deadline") || t.contains("timed out") { return "таймаут" }
         if t.contains("reset") || t.contains("eof") { return "обрыв соединения" }
+        if t.contains("error occurred in the delay") { return "не отвечает" }
         return String(text.prefix(28))
     }
 
