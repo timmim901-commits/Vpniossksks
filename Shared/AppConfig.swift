@@ -41,22 +41,3 @@ enum ClashAPI {
     static let host = "127.0.0.1"
     static let port = 9099
 }
-
-/// Простой лог в общем контейнере: туннель пишет, приложение показывает.
-enum Breadcrumb {
-    static let file = FilePath.sharedDirectory.appendingPathComponent("tunnel.log")
-
-    static func reset() { try? FileManager.default.removeItem(at: file) }
-
-    static func log(_ text: String) {
-        let line = "\(Date().formatted(date: .omitted, time: .standard)) \(text)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        if let h = try? FileHandle(forWritingTo: file) {
-            h.seekToEndOfFile(); h.write(data); try? h.close()
-        } else {
-            try? data.write(to: file)
-        }
-    }
-
-    static func read() -> String { (try? String(contentsOf: file, encoding: .utf8)) ?? "" }
-}

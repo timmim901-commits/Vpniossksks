@@ -42,7 +42,7 @@ struct SettingsView: View {
 
                 Section("Диагностика") {
                     NavigationLink("Журнал ядра") { LogsView() }
-                    NavigationLink("Лог запуска туннеля") { TunnelLogView() }
+                    NavigationLink("Логи и отчёт") { LogCenterView() }
                     Button("Показать конфиг sing-box") { showConfig = true }
                 }
 
@@ -132,27 +132,91 @@ struct LogsView: View {
     }
 }
 
-struct TunnelLogView: View {
+enum Diagnostics {
+    /// Текст отчёта: версии, состояние, хвосты логов и конфиг без секретов.
+    @MainActor
+    static func report(store: Store) -> String {
+        let d = store.data
+        var out: [String] = []
+        let ver = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        out.append("== Orbit \(ver) ==")
+        out.append("iOS \(UIDevice.current.systemVersion), \(UIDevice.current.model)")
+        out.append("bundle: \(Bundle.main.bundleIdentifier ?? "?")")
+        out.append("app group: \(AppConfig.appGroupID) — \(FilePath.hasGroupContainer ? "доступна" : "НЕДОСТУПНА")")
+        out.append("режим: \(d.settings.mode.rawValue), узлов: \(d.nodes.count) [\(Set(d.nodes.map { $0.type }).sorted().joined(separator: ","))], подписок: \(d.subscriptions.count), правил: \(d.rules.count)")
+        out.append("tailscale: \(d.tailscale.enabled), ipv6: \(d.settings.ipv6), mtu: \(d.settings.mtu), onDemand: \(d.settings.onDemand)")
+        func tail(_ s: String, _ n: Int) -> String { s.count > n ? "…" + String(s.suffix(n)) : s }
+        out.append("\n== app.log ==\n" + tail(Log.app.read(), 6000))
+        out.append("\n== tunnel.log ==\n" + tail(Log.tunnel.read(), 6000))
+        out.append("\n== core.log ==\n" + tail(Log.core.read(), 8000))
+        out.append("\n== config.json (секреты скрыты) ==\n" + redact((try? String(contentsOf: FilePath.configFile, encoding: .utf8)) ?? "нет файла"))
+        return out.joined(separator: "\n")
+    }
+
+    static func redact(_ json: String) -> String {
+        let pattern = #""(password|secret|auth_key|private_key|pre_shared_key|uuid|public_key|short_id|username)"\s*:\s*"[^"]*""#
+        return json.replacingOccurrences(of: pattern, with: #""$1" : "***""#, options: .regularExpression)
+    }
+}
+
+struct LogCenterView: View {
+    enum Source: String, CaseIterable, Identifiable {
+        case app = "Приложение", tunnel = "Туннель", core = "Ядро"
+        var id: String { rawValue }
+        var file: LogFile {
+            switch self {
+            case .app: return Log.app
+            case .tunnel: return Log.tunnel
+            case .core: return Log.core
+            }
+        }
+    }
+
+    @EnvironmentObject var store: Store
+    @State private var source: Source = .tunnel
     @State private var text = ""
+    @State private var copied = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("App Group: \(AppConfig.appGroupID) — \(FilePath.hasGroupContainer ? "доступна" : "НЕДОСТУПНА")")
-                    .font(.footnote.bold())
-                    .foregroundStyle(FilePath.hasGroupContainer ? .green : .red)
-                Text("Bundle ID: \(Bundle.main.bundleIdentifier ?? "?")").font(.footnote)
-                Divider()
-                Text(text.isEmpty ? "Лог пуст: туннель ещё не запускался." : text)
-                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+        VStack(spacing: 8) {
+            Picker("Источник", selection: $source) {
+                ForEach(Source.allCases) { Text($0.rawValue).tag($0) }
             }
-            .frame(maxWidth: .infinity, alignment: .leading).padding()
+            .pickerStyle(.segmented).padding(.horizontal)
+
+            Text("App Group: \(FilePath.hasGroupContainer ? "доступна" : "НЕДОСТУПНА") • \(Bundle.main.bundleIdentifier ?? "?")")
+                .font(.caption2.bold())
+                .foregroundStyle(FilePath.hasGroupContainer ? .green : .red)
+
+            ScrollView {
+                Text(text.isEmpty ? "Лог пуст." : text)
+                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
+            }
+
+            HStack {
+                Button(copied ? "Скопировано ✓" : "Скопировать отчёт") {
+                    UIPasteboard.general.string = Diagnostics.report(store: store)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+                }
+                .buttonStyle(.borderedProminent)
+                ShareLink(item: Diagnostics.report(store: store)) { Label("Поделиться", systemImage: "square.and.arrow.up") }
+                    .buttonStyle(.bordered)
+            }
+            .padding(.bottom, 8)
         }
-        .navigationTitle("Лог туннеля")
+        .navigationTitle("Логи")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { Button { text = Breadcrumb.read() } label: { Image(systemName: "arrow.clockwise") } }
-            ToolbarItem(placement: .topBarTrailing) { ShareLink(item: text) }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { refresh() } label: { Image(systemName: "arrow.clockwise") }
+                Button(role: .destructive) { source.file.clear(); refresh() } label: { Image(systemName: "trash") }
+            }
         }
-        .onAppear { text = Breadcrumb.read() }
+        .onAppear { refresh() }
+        .onChange(of: source) { _ in refresh() }
     }
+
+    private func refresh() { text = source.file.read() }
 }

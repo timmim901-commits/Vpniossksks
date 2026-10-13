@@ -33,6 +33,9 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSCameraUsageDescription: Сканирование QR-кодов с профилями
         ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: $(BASE_BUNDLE_ID).import
+            CFBundleURLSchemes: [sub, orbit, sing-box, clash, clashmeta, v2rayng, hiddify, happ, shadowrocket, vless, vmess, trojan, ss, hysteria2, hy2, tuic, anytls, socks, socks5]
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
     entitlements:

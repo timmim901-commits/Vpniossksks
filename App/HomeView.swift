@@ -97,8 +97,7 @@ struct HomeView: View {
             .sheet(isPresented: $showScanner) {
                 QRScannerView { code in
                     showScanner = false
-                    let n = store.importText(code)
-                    message = n > 0 ? "Добавлено узлов: \(n)" : "В QR не найдено узлов"
+                    Task { message = await store.smartImport(code).message }
                 }
             }
             .alert("Orbit", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -141,6 +140,7 @@ struct HomeView: View {
             .pickerStyle(.segmented)
             if let e = vpn.lastError {
                 Text(e).font(.footnote).foregroundStyle(.red)
+                NavigationLink("Открыть логи") { LogCenterView() }.font(.footnote)
             }
         }
         .frame(maxWidth: .infinity)
@@ -185,8 +185,7 @@ struct HomeView: View {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
             message = "Буфер обмена пуст"; return
         }
-        let n = store.importText(text)
-        message = n > 0 ? "Добавлено узлов: \(n)" : "В буфере не найдено поддерживаемых ссылок"
+        Task { message = await store.smartImport(text).message }
     }
 
     private func refresh(_ sub: Subscription) async {
@@ -225,7 +224,7 @@ struct AddTextSheet: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Вставьте одну или несколько ссылок (по одной в строке), WireGuard .conf или sing-box JSON.")
+                Text("Вставьте ссылки на узлы или подписки (sub://, https://…), по одной в строке, WireGuard .conf или sing-box JSON.")
                     .font(.footnote).foregroundStyle(.secondary)
                 TextEditor(text: $text)
                     .font(.system(.footnote, design: .monospaced))
@@ -240,8 +239,10 @@ struct AddTextSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Добавить") {
-                        let n = store.importText(text)
-                        if n > 0 { dismiss() } else { result = "Не удалось распознать ни одного узла" }
+                        Task {
+                            let r = await store.smartImport(text)
+                            if r.ok { dismiss() } else { result = r.message }
+                        }
                     }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

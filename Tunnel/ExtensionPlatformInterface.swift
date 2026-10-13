@@ -228,6 +228,7 @@ final class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtoco
 
     public func writeLog(_ message: String?) {
         guard let message else { return }
+        Log.core.log(message)
         tunnel.writeMessage(message)
     }
 

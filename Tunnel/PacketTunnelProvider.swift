@@ -15,7 +15,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platformInterface = ExtensionPlatformInterface(self)
 
     override func startTunnel(options _: [String: NSObject]?) async throws {
-        Breadcrumb.reset()
+        Breadcrumb.log("---------- startTunnel ----------")
         Breadcrumb.log("startTunnel, bundle=\(Bundle.main.bundleIdentifier ?? "?"), group=\(AppConfig.appGroupID), groupOK=\(FilePath.hasGroupContainer)")
         do {
             try await start()
@@ -99,6 +99,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     func reloadService() async throws {
+        Breadcrumb.log("reload: перечитываю config.json")
         writeMessage("Orbit: перезагрузка конфигурации")
         reasserting = true
         defer { reasserting = false }
@@ -106,6 +107,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason) async {
+        Breadcrumb.log("stopTunnel, причина=\(reason.rawValue)")
         writeMessage("Orbit: остановка, причина \(reason.rawValue)")
         stopService()
         if let server = commandServer {
@@ -120,17 +122,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard String(data: messageData, encoding: .utf8) == "reload" else { return nil }
         do {
             try await reloadService()
+            Breadcrumb.log("reload OK")
             return nil
         } catch {
+            Breadcrumb.log("reload ОШИБКА: \(error.localizedDescription)")
             return error.localizedDescription.data(using: .utf8)
         }
     }
 
     override func sleep() async {
+        Breadcrumb.log("sleep")
         commandServer?.pause()
     }
 
     override func wake() {
+        Breadcrumb.log("wake")
         commandServer?.wake()
     }
 }

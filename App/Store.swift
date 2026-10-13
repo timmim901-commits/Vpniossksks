@@ -5,6 +5,8 @@ final class Store: ObservableObject {
     @Published var data = Persisted() {
         didSet { save() }
     }
+    /// Сообщение для всплывающего окна (результат импорта по ссылке и т.п.).
+    @Published var toast: String?
 
     init() {
         if let raw = try? Data(contentsOf: FilePath.storeFile),
@@ -33,6 +35,51 @@ final class Store: ObservableObject {
         if let selected = data.settings.selectedNodeID, nodeIDs.contains(selected) {
             data.settings.selectedNodeID = nil
         }
+    }
+
+    /// Умный импорт: ссылки на подписки (sub://, https://…), share-ссылки, WireGuard, JSON.
+    func smartImport(_ text: String) async -> (ok: Bool, message: String) {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var nodeLines: [String] = []
+        var subsAdded = 0
+        var nodesFromSubs = 0
+        var errors: [String] = []
+
+        // JSON и WireGuard-конфиги многострочные — не разбираем построчно
+        let whole = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if whole.hasPrefix("{") || whole.hasPrefix("[") || whole.contains("[Interface]") {
+            nodeLines = [whole]
+        } else {
+            for line in lines {
+                if let sub = DeepLink.subscriptionRequest(from: line) {
+                    do {
+                        let n = try await addSubscription(name: sub.name, url: sub.url)
+                        subsAdded += 1; nodesFromSubs += n
+                        Log.app.log("подписка добавлена: \(URL(string: sub.url)?.host ?? "?"), узлов \(n)")
+                    } catch {
+                        errors.append(error.localizedDescription)
+                        Log.app.log("подписка ОШИБКА (\(URL(string: sub.url)?.host ?? "?")): \(error.localizedDescription)")
+                    }
+                } else {
+                    nodeLines.append(line)
+                }
+            }
+        }
+        var added = 0
+        if !nodeLines.isEmpty {
+            added = importText(nodeLines.joined(separator: "\n"))
+            Log.app.log("импорт узлов: строк \(nodeLines.count), добавлено \(added)")
+        }
+        var parts: [String] = []
+        if subsAdded > 0 { parts.append("подписок: \(subsAdded) (узлов \(nodesFromSubs))") }
+        if added > 0 { parts.append("узлов: \(added)") }
+        if parts.isEmpty {
+            return (false, errors.first ?? "Не удалось распознать ни ссылку на подписку, ни узел")
+        }
+        var msg = "Добавлено — " + parts.joined(separator: ", ")
+        if let e = errors.first { msg += "\nОшибка: " + e }
+        return (true, msg)
     }
 
     /// Импорт текста: ссылки, WireGuard-конфиг, sing-box JSON.
