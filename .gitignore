@@ -1,0 +1,11 @@
+build/
+Payload/
+*.ipa
+*.xcodeproj
+Libbox.xcframework
+Libbox.tar
+App/Info.plist
+App/Orbit.entitlements
+Tunnel/Info.plist
+Tunnel/OrbitTunnel.entitlements
+.DS_Store

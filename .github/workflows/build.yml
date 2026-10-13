@@ -1,0 +1,93 @@
+name: Build Orbit IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  # Коммит sing-box, с которым согласован Swift-код туннеля (Tunnel/*.swift). Не менять без проверки API.
+  SING_BOX_REF: e4b7e692f4545890bfc9d43960328e1449fa803b
+
+jobs:
+  libbox:
+    name: Libbox.xcframework (ядро sing-box)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache готового Libbox
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: Libbox.tar
+          key: libbox-ios-${{ env.SING_BOX_REF }}-v1
+
+      - uses: actions/setup-go@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: 1.26.8
+          cache: false
+
+      - name: Собрать Libbox
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none https://github.com/SagerNet/sing-box.git "$RUNNER_TEMP/sing-box"
+          cd "$RUNNER_TEMP/sing-box"
+          git checkout "$SING_BOX_REF"
+          git fetch --tags origin
+          if [ -f .github/patch_go_for_ios.sh ]; then bash .github/patch_go_for_ios.sh; fi
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          GOTOOLCHAIN=local go run ./cmd/internal/build_libbox -target apple -platform ios/arm64
+          tar -cf "$GITHUB_WORKSPACE/Libbox.tar" Libbox.xcframework
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libbox
+          path: Libbox.tar
+          compression-level: 1
+
+  app:
+    name: Orbit.ipa
+    needs: libbox
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: libbox
+
+      - name: Распаковать Libbox
+        run: tar -xf Libbox.tar
+
+      - name: Инструменты
+        run: brew install xcodegen ldid
+
+      - name: Сгенерировать проект
+        run: xcodegen generate
+
+      - name: Собрать (без подписи)
+        run: |
+          set -euxo pipefail
+          mkdir -p build
+          xcodebuild -project Orbit.xcodeproj -scheme Orbit -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath build/Orbit.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive | tee build/xcodebuild.log | tail -n 40 || (tail -n 200 build/xcodebuild.log; exit 1)
+
+      - name: Подписать и упаковать IPA
+        env:
+          CERT_P12_BASE64: ${{ secrets.CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+          APP_PROFILE_BASE64: ${{ secrets.APP_PROFILE_BASE64 }}
+          TUNNEL_PROFILE_BASE64: ${{ secrets.TUNNEL_PROFILE_BASE64 }}
+        run: bash scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Orbit-ipa
+          path: Orbit*.ipa
