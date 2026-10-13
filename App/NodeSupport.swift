@@ -7,6 +7,9 @@ extension Node {
     /// Вспомогательное звено (например, ShadowTLS): само по себе не выбирается, используется в цепочках.
     var isHelper: Bool { type == "shadowtls" }
 
+    /// Узел исполняется встроенным ядром Xray (sing-box ходит к нему через локальный SOCKS).
+    var isXray: Bool { type == "xray" }
+
     var object: [String: Any]? {
         guard let d = json.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
@@ -15,6 +18,12 @@ extension Node {
     /// Адрес для TCP-пинга.
     var hostPort: (host: String, port: Int)? {
         guard let o = object else { return nil }
+        if isXray {
+            let settings = o["settings"] as? [String: Any]
+            let first = ((settings?["vnext"] as? [[String: Any]]) ?? (settings?["servers"] as? [[String: Any]]))?.first
+            if let host = first?["address"] as? String, let port = first?["port"] as? Int { return (host, port) }
+            return nil
+        }
         if let peers = o["peers"] as? [[String: Any]], let p = peers.first, let host = p["address"] as? String {
             return (host, (p["port"] as? Int) ?? 51820)
         }
@@ -44,7 +53,7 @@ extension Node {
 enum NodeJSON {
     static let knownTypes: [String] = [
         "vless", "vmess", "trojan", "shadowsocks", "shadowtls", "hysteria", "hysteria2", "tuic", "anytls",
-        "http", "socks", "naive", "ssh", "snell", "gost", "tor",
+        "http", "socks", "naive", "ssh", "snell", "gost", "xray", "tor",
         "wireguard", "masque-client", "openconnect", "openvpn-client",
     ]
 
@@ -86,7 +95,8 @@ enum NodeJSON {
             return fail("Тип «\(type)» не поддерживается ядром. Доступно: \(knownTypes.joined(separator: ", "))")
         }
         let isEndpoint = LinkParser.endpointTypes.contains(type)
-        if !isEndpoint, type != "tor", obj["server"] == nil, obj["_shadowtls"] == nil {
+        if type == "xray", obj["protocol"] == nil { return fail("Для Xray нужно поле \"protocol\" (outbound в формате Xray)") }
+        if !isEndpoint, type != "tor", type != "xray", obj["server"] == nil, obj["_shadowtls"] == nil {
             return fail("Нет поля \"server\"")
         }
         var finalName = name.trimmingCharacters(in: .whitespaces)
@@ -260,6 +270,30 @@ enum NodeTemplates {
           "username": "user",
           "password": "PASSWORD",
           "tls": { "enabled": true, "server_name": "example.com" }
+        }
+        """),
+        Template(title: "Xray: VLESS + XHTTP + Reality", json: """
+        {
+          "type": "xray",
+          "protocol": "vless",
+          "settings": {
+            "vnext": [{
+              "address": "example.com",
+              "port": 443,
+              "users": [{ "id": "00000000-0000-0000-0000-000000000000", "encryption": "none" }]
+            }]
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "xhttpSettings": { "path": "/", "mode": "auto" },
+            "security": "reality",
+            "realitySettings": {
+              "serverName": "www.microsoft.com",
+              "fingerprint": "chrome",
+              "publicKey": "PUBLIC_KEY",
+              "shortId": "SHORT_ID"
+            }
+          }
         }
         """),
         Template(title: "Snell", json: """

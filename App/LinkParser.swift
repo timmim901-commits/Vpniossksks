@@ -152,13 +152,45 @@ enum LinkParser {
     private static func parseVLESS(_ link: String) -> Node? {
         guard let p = components(link), let uuid = p.user else { return nil }
         let type = p.query["type"] ?? "tcp"
-        if type == "xhttp" || type == "splithttp" { return nil } // sing-box не поддерживает
+        if type == "xhttp" || type == "splithttp" { return parseXrayVLESS(p, uuid: uuid) } // только через ядро Xray
         var o: JSON = ["type": "vless", "tag": p.name, "server": p.host, "server_port": p.port, "uuid": uuid]
         if let flow = p.query["flow"], !flow.isEmpty { o["flow"] = flow }
         o["packet_encoding"] = p.query["packetEncoding"] ?? "xudp"
         if let t = tls(p.query, defaultSNI: p.host) { o["tls"] = t }
         if let tr = transport(p.query, host: p.host) { o["transport"] = tr }
         return makeNode(name: p.name, type: "vless", json: o)
+    }
+
+    /// VLESS с транспортом XHTTP: sing-box не умеет, поэтому узел исполняет встроенное ядро Xray.
+    private static func parseXrayVLESS(_ p: Parsed, uuid: String) -> Node? {
+        let q = p.query
+        var user: JSON = ["id": uuid, "encryption": q["encryption"] ?? "none"]
+        if let flow = q["flow"], !flow.isEmpty { user["flow"] = flow }
+        var xhttp: JSON = ["path": q["path"] ?? "/", "mode": q["mode"] ?? "auto"]
+        if let host = q["host"], !host.isEmpty { xhttp["host"] = host }
+        if let extra = q["extra"], let d = extra.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: d) { xhttp["extra"] = obj }
+        var stream: JSON = ["network": "xhttp", "xhttpSettings": xhttp]
+        let security = q["security"] ?? "none"
+        stream["security"] = security
+        let sni = q["sni"] ?? q["host"] ?? p.host
+        let fp = (q["fp"]?.isEmpty == false) ? q["fp"]! : "chrome"
+        if security == "tls" {
+            var t: JSON = ["serverName": sni, "fingerprint": fp]
+            if let alpn = q["alpn"], !alpn.isEmpty { t["alpn"] = alpn.split(separator: ",").map(String.init) }
+            if q["allowInsecure"] == "1" || q["insecure"] == "1" { t["allowInsecure"] = true }
+            stream["tlsSettings"] = t
+        } else if security == "reality" {
+            stream["realitySettings"] = ["serverName": sni, "fingerprint": fp,
+                                         "publicKey": q["pbk"] ?? "", "shortId": q["sid"] ?? "",
+                                         "spiderX": q["spx"] ?? ""] as JSON
+        }
+        let o: JSON = [
+            "protocol": "vless",
+            "settings": ["vnext": [["address": p.host, "port": p.port, "users": [user]] as JSON]] as JSON,
+            "streamSettings": stream,
+        ]
+        return makeNode(name: p.name, type: "xray", json: o)
     }
 
     private static func parseVMess(_ link: String) -> Node? {

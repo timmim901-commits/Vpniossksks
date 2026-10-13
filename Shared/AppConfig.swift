@@ -33,6 +33,7 @@ enum FilePath {
 
     /// Готовый JSON-конфиг sing-box, который читает расширение.
     static let configFile = sharedDirectory.appendingPathComponent("config.json")
+    static let xrayFile = sharedDirectory.appendingPathComponent("xray.json")
     /// Хранилище узлов, правил и настроек приложения.
     static let storeFile = sharedDirectory.appendingPathComponent("store.json")
 }

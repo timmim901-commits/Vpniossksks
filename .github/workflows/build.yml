@@ -33,6 +33,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
+          exec > >(tee "$RUNNER_TEMP/build.log") 2>&1
+          trap 'rc=$?; if [ $rc -ne 0 ]; then sleep 2; echo "::error::$(tail -n 40 "$RUNNER_TEMP/build.log" | awk "{printf \"%s%%0A\", \$0}")"; fi' EXIT
           git clone --filter=blob:none https://github.com/SagerNet/sing-box.git "$RUNNER_TEMP/sing-box"
           cd "$RUNNER_TEMP/sing-box"
           git checkout "$SING_BOX_REF"

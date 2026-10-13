@@ -34,6 +34,49 @@ struct ConfigBuilder {
         return tags
     }
 
+    static let xrayBasePort = 10800
+
+    /// Локальные SOCKS-порты узлов Xray (sing-box → 127.0.0.1:порт → Xray).
+    func xrayPorts() -> [UUID: Int] {
+        var result: [UUID: Int] = [:]
+        for (i, node) in data.nodes.filter({ $0.isXray }).enumerated() {
+            result[node.id] = ConfigBuilder.xrayBasePort + i
+        }
+        return result
+    }
+
+    /// Конфиг для встроенного Xray (nil, если узлов Xray нет).
+    func buildXray() -> String? {
+        let ports = xrayPorts()
+        guard !ports.isEmpty else { return nil }
+        var inbounds: [JSON] = []
+        var outbounds: [JSON] = []
+        var rules: [JSON] = []
+        for node in data.nodes where node.isXray {
+            guard let port = ports[node.id], var out = parse(node) else { continue }
+            out.removeValue(forKey: "type")
+            out.removeValue(forKey: "tag")
+            let n = port - ConfigBuilder.xrayBasePort
+            out["tag"] = "out-\(n)"
+            inbounds.append(["tag": "in-\(n)", "listen": "127.0.0.1", "port": port, "protocol": "socks",
+                             "settings": ["udp": true, "auth": "noauth"] as JSON])
+            outbounds.append(out)
+            rules.append(["type": "field", "inboundTag": ["in-\(n)"], "outboundTag": "out-\(n)"])
+        }
+        let config: JSON = [
+            "log": ["loglevel": "warning"] as JSON,
+            "inbounds": inbounds,
+            "outbounds": outbounds,
+            "routing": ["domainStrategy": "AsIs", "rules": rules] as JSON,
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]) else { return nil }
+        return String(data: d, encoding: .utf8)
+    }
+
+    private func xraySocks(tag: String, port: Int) -> JSON {
+        ["type": "socks", "tag": tag, "server": "127.0.0.1", "server_port": port, "version": "5"]
+    }
+
     private func parse(_ node: Node) -> JSON? {
         guard let raw = node.json.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: raw)) as? JSON
@@ -65,7 +108,12 @@ struct ConfigBuilder {
         var outbounds: [JSON] = []
         var endpoints: [JSON] = []
         let tags = tagMap()
+        let xports = xrayPorts()
         for node in data.nodes where !node.isHelper {
+            if node.isXray, let tag = tags[node.id], let port = xports[node.id] {
+                outbounds.append(xraySocks(tag: tag, port: port))
+                continue
+            }
             guard let tag = tags[node.id], var obj = parse(node) else { continue }
             obj["tag"] = tag
             obj = expand(obj, tag: tag, into: &outbounds)
@@ -77,9 +125,14 @@ struct ConfigBuilder {
             let members = chain.members.compactMap { id in data.nodes.first { $0.id == id } }
             var previous: String?
             for (i, member) in members.enumerated() {
-                guard var obj = parse(member) else { continue }
                 let isLast = i == members.count - 1
                 let tag = isLast ? chainTag : "\(chainTag) ›\(i + 1)"
+                if member.isXray, let port = xports[member.id] {
+                    outbounds.append(xraySocks(tag: tag, port: port))
+                    previous = tag
+                    continue
+                }
+                guard var obj = parse(member) else { continue }
                 obj["tag"] = tag
                 obj = expand(obj, tag: tag, into: &outbounds)
                 if let previous { obj["detour"] = previous }

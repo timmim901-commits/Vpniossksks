@@ -141,6 +141,12 @@ final class VPNManager: ObservableObject {
     func writeConfig(_ store: Store) throws {
         let text = try ConfigBuilder(data: store.data).build()
         try text.write(to: FilePath.configFile, atomically: true, encoding: .utf8)
+        if let xray = ConfigBuilder(data: store.data).buildXray() {
+            try xray.write(to: FilePath.xrayFile, atomically: true, encoding: .utf8)
+            Log.app.log("xray.json записан: \(xray.utf8.count) байт")
+        } else {
+            try? FileManager.default.removeItem(at: FilePath.xrayFile)
+        }
         let d = store.data
         Log.app.log("конфиг записан: \(text.utf8.count) байт, режим=\(d.settings.mode.rawValue), узлов=\(d.nodes.count), правил=\(d.rules.count), tailscale=\(d.tailscale.enabled)")
     }

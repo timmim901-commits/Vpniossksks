@@ -80,6 +80,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             throw ExtensionStartupError("не удалось прочитать config.json: \(error.localizedDescription)")
         }
+        try startXrayIfNeeded()
         Breadcrumb.log("config.json: \(content.utf8.count) байт, запускаю ядро")
         let options = LibboxOverrideOptions()
         do {
@@ -89,7 +90,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    /// Узлы Xray: ядро Xray слушает локальные SOCKS-порты, sing-box отправляет в них трафик.
+    private func startXrayIfNeeded() throws {
+        var err: NSError?
+        guard let text = try? String(contentsOf: FilePath.xrayFile, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            _ = XraybridgeStop(&err)
+            return
+        }
+        Breadcrumb.log("xray.json: \(text.utf8.count) байт, запускаю Xray \(XraybridgeVersion())")
+        if !XraybridgeStart(text, &err) {
+            throw ExtensionStartupError("xray: \(err?.localizedDescription ?? "ошибка запуска")")
+        }
+        Breadcrumb.log("xray запущен")
+    }
+
     func stopService() {
+        var xerr: NSError?
+        _ = XraybridgeStop(&xerr)
         do {
             try commandServer?.closeService()
         } catch {
