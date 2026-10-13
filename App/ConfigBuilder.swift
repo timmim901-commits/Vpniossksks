@@ -6,7 +6,7 @@ struct ConfigBuilder {
 
     let data: Persisted
 
-    private static let reservedTags: Set<String> = ["direct", "proxy", "auto", "ts", "dns-remote", "dns-local", "dns-ts"]
+    private static let reservedTags: Set<String> = ["direct", "proxy", "auto", "ts", "dns-remote", "dns-local", "dns-ts", "dns-system"]
 
     struct BuildError: LocalizedError {
         let message: String
@@ -251,6 +251,9 @@ struct ConfigBuilder {
 
         // --- DNS ---
         var dnsServers: [JSON] = []
+        // Системный резолвер: им разрешаем домены самих серверов (как это делает Shadowrocket),
+        // чтобы не зависеть от «чужого» DNS, который может подменять адреса.
+        dnsServers.append(["type": "local", "tag": "dns-system"])
         dnsServers.append(dnsServer(tag: "dns-local", from: s.localDNS, detour: nil))
         var remote = dnsServer(tag: "dns-remote", from: s.remoteDNS, detour: hasNodes && s.mode != .direct ? "proxy" : nil)
         if s.mode == .direct { remote = dnsServer(tag: "dns-remote", from: s.localDNS, detour: nil) }
@@ -280,7 +283,7 @@ struct ConfigBuilder {
                 "rule_set": Array(ruleSets.values),
                 "final": finalOutbound,
                 "auto_detect_interface": true,
-                "default_domain_resolver": "dns-local",
+                "default_domain_resolver": "dns-system",
             ] as JSON,
             "experimental": [
                 "cache_file": ["enabled": true],
@@ -367,7 +370,7 @@ struct ConfigBuilder {
         if let detour { s["detour"] = detour }
         if host.rangeOfCharacter(from: CharacterSet.letters) != nil, !host.contains(":") {
             // доменное имя DNS-сервера нужно разрешить через локальный DNS
-            if tag != "dns-local" { s["domain_resolver"] = "dns-local" }
+            if tag != "dns-local" { s["domain_resolver"] = "dns-system" } else { s["domain_resolver"] = "dns-system" }
         }
         return s
     }
