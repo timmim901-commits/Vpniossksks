@@ -240,7 +240,7 @@ struct HomeView: View {
         case .ms(let v):
             Text("\(v) мс").font(.caption.monospacedDigit()).foregroundStyle(v < 300 ? .green : .orange)
         case .failed(let why):
-            Text(why).font(.caption).foregroundStyle(.red)
+            Text(why).font(.caption).foregroundStyle(.red).lineLimit(1)
         case .udp:
             Text("UDP").font(.caption).foregroundStyle(.secondary)
         case nil:

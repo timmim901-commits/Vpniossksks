@@ -120,13 +120,27 @@ final class PingModel: ObservableObject {
         return jobs
     }
 
+    /// Короткая причина для строки списка; полный текст ошибки пишется в лог приложения.
+    nonisolated private static func shortReason(_ text: String) -> String {
+        let t = text.lowercased()
+        if t.contains("refused") { return "отказ в соединении" }
+        if t.contains("reality") { return "reality: ошибка" }
+        if t.contains("tls") || t.contains("certificate") { return "ошибка TLS" }
+        if t.contains("no such host") || t.contains("lookup") || t.contains("dns") { return "DNS не резолвит" }
+        if t.contains("timeout") || t.contains("deadline") || t.contains("timed out") { return "таймаут" }
+        if t.contains("reset") || t.contains("eof") { return "обрыв соединения" }
+        return String(text.prefix(28))
+    }
+
     nonisolated private static func measure(_ j: Job, connected: Bool, secret: String, url: String) async -> State {
         if connected {
             do {
                 let ms = try await ClashClient(secret: secret).delay(tag: j.tag, url: url)
                 return ms > 0 ? .ms(ms) : .failed("таймаут")
             } catch {
-                return .failed("таймаут")
+                let full = error.localizedDescription
+                Log.app.log("пинг через туннель «\(j.tag)»: \(full)")
+                return .failed(shortReason(full))
             }
         }
         if j.udp { return .udp }

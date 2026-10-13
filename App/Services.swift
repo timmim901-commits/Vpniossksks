@@ -3,6 +3,11 @@ import NetworkExtension
 
 // MARK: - Clash API (локальный API ядра внутри туннеля)
 
+struct ClashError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct ClashClient {
     let secret: String
 
@@ -16,7 +21,10 @@ struct ClashClient {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         let (data, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { throw URLError(.badServerResponse) }
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String
+            throw ClashError(message: message ?? "HTTP \(http.statusCode)")
+        }
         return data
     }
 
