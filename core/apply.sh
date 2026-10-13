@@ -22,7 +22,10 @@ PY
 XRAY_VERSION="${XRAY_VERSION:-v26.7.28}"
 mkdir -p experimental/xraybridge
 cp "$SRC/xraybridge/xray.go" experimental/xraybridge/xray.go
-go get "github.com/xtls/xray-core@${XRAY_VERSION}"
+# теги Xray (v26.x) не совместимы с semver-модулями Go — берём коммит тега
+XRAY_SHA="$(git ls-remote https://github.com/XTLS/Xray-core "refs/tags/${XRAY_VERSION}^{}" "refs/tags/${XRAY_VERSION}" | tail -n1 | cut -f1)"
+echo "xray-core ${XRAY_VERSION} -> ${XRAY_SHA}"
+go get "github.com/xtls/xray-core@${XRAY_SHA}"
 go get ./experimental/xraybridge
 python3 - <<'PY'
 p = "cmd/internal/build_libbox/main.go"
