@@ -21,7 +21,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Libbox.tar
-          key: libbox-ios-${{ env.SING_BOX_REF }}-v1
+          key: libbox-ios-${{ env.SING_BOX_REF }}-v2-gost
 
       - uses: actions/setup-go@v5
         if: steps.cache.outputs.cache-hit != 'true'
@@ -37,6 +37,7 @@ jobs:
           cd "$RUNNER_TEMP/sing-box"
           git checkout "$SING_BOX_REF"
           git fetch --tags origin
+          bash "$GITHUB_WORKSPACE/core/apply.sh"
           if [ -f .github/patch_go_for_ios.sh ]; then bash .github/patch_go_for_ios.sh; fi
           make lib_install
           export PATH="$PATH:$(go env GOPATH)/bin"

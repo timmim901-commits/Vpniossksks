@@ -44,7 +44,7 @@ extension Node {
 enum NodeJSON {
     static let knownTypes: [String] = [
         "vless", "vmess", "trojan", "shadowsocks", "shadowtls", "hysteria", "hysteria2", "tuic", "anytls",
-        "http", "socks", "naive", "ssh", "snell", "tor",
+        "http", "socks", "naive", "ssh", "snell", "gost", "tor",
         "wireguard", "masque-client", "openconnect", "openvpn-client",
     ]
 
@@ -247,6 +247,16 @@ enum NodeTemplates {
           "version": "5",
           "server": "example.com",
           "server_port": 1080,
+          "username": "user",
+          "password": "PASSWORD",
+          "tls": { "enabled": true, "server_name": "example.com" }
+        }
+        """),
+        Template(title: "GOST Relay (TCP, +TLS)", json: """
+        {
+          "type": "gost",
+          "server": "example.com",
+          "server_port": 8420,
           "username": "user",
           "password": "PASSWORD",
           "tls": { "enabled": true, "server_name": "example.com" }
